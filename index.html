@@ -852,55 +852,32 @@ const userPhotos={}; // dishName -> cloudinary URL
 const CLOUDINARY_CLOUD = 'dslcn8jtu';
 const CLOUDINARY_PRESET = 'todayeatwhat';
 
-// ── GitHub Gist config for cross-device photo sync ──
-const GIST_ID = 'cca7505a71b64f06b0f305e569c933c1';
-const GIST_TOKEN = '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';
-const GIST_FILENAME = 'dish_photos.json';
+// ── Simple cross-device sync via Cloudinary ──
+// Each dish gets a fixed public_id based on its name hash
+// We fetch all dish photos by trying each known public_id on load
 
-async function loadPhotoIndex(){
-  try {
-    const res = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
-      headers: { 'Authorization': `token ${GIST_TOKEN}` }
-    });
-    const data = await res.json();
-    const content = data.files?.[GIST_FILENAME]?.content;
-    if(!content) return;
-    const photos = JSON.parse(content).photos || {};
-    Object.entries(photos).forEach(([name, photoUrl]) => {
-      userPhotos[name] = photoUrl;
-      const meal = userMeals.find(m => m.name === name);
-      if(meal) meal.userPhoto = photoUrl;
-    });
-    if(Object.keys(photos).length > 0) renderCards();
-  } catch(e){ console.warn('Could not load photo index:', e); }
+function dishToId(name){
+  // Convert dish name to a safe alphanumeric ID
+  let hash = 0;
+  for(let i=0;i<name.length;i++) hash = ((hash<<5)-hash)+name.charCodeAt(i);
+  return 'dish_' + Math.abs(hash).toString(36);
 }
 
-async function savePhotoIndex(){
-  try {
-    const res = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
-      method: 'PATCH',
-      headers: {
-        'Authorization': `token ${GIST_TOKEN}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        files: {
-          [GIST_FILENAME]: {
-            content: JSON.stringify({ photos: userPhotos })
-          }
-        }
-      })
-    });
-    const data = await res.json();
-    if(res.ok) showToast('✓ 相片已儲存');
-    else {
-      const msg = data.message || res.status;
-      alert('Gist save failed: ' + msg);
-    }
-  } catch(e){
-    alert('Gist save error: ' + e.message);
-    console.warn('Gist save error:', e);
-  }
+async function loadPhotoIndex(){
+  // Try to load each dish's photo from Cloudinary by its fixed public_id
+  const promises = userMeals.map(async m => {
+    const pid = dishToId(m.name);
+    const url = `https://res.cloudinary.com/${CLOUDINARY_CLOUD}/image/upload/${pid}.jpg`;
+    try {
+      const res = await fetch(url, {method:'HEAD'});
+      if(res.ok){
+        userPhotos[m.name] = url;
+        m.userPhoto = url;
+      }
+    } catch(e){}
+  });
+  await Promise.all(promises);
+  if(Object.keys(userPhotos).length > 0) renderCards();
 }
 
 loadPhotoIndex();
@@ -1041,11 +1018,11 @@ function confirmCrop(){
   if(imgEl) imgEl.innerHTML=`<div class="img-loading"><div class="idots"><div class="id"></div><div class="id"></div><div class="id"></div></div><span>上載中⋯⋯</span></div>`;
   showToast('上載中⋯⋯');
 
-  // Upload to Cloudinary
+  // Upload to Cloudinary with fixed public_id per dish
   const formData = new FormData();
   formData.append('file', dataUrl);
   formData.append('upload_preset', CLOUDINARY_PRESET);
-  formData.append('public_id', 'dish_' + Date.now());
+  formData.append('public_id', dishToId(dishName));
 
   fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/image/upload`, {
     method: 'POST',
@@ -1054,12 +1031,12 @@ function confirmCrop(){
   .then(r => r.json())
   .then(data => {
     if(data.secure_url){
-      const url = data.secure_url;
+      // Use fixed URL based on dish ID (works on all devices)
+      const url = `https://res.cloudinary.com/${CLOUDINARY_CLOUD}/image/upload/${dishToId(dishName)}.jpg`;
       userPhotos[dishName] = url;
       const meal = userMeals.find(m=>m.name===dishName);
       if(meal) meal.userPhoto = url;
-      // Save updated index to Cloudinary so all devices see it
-      savePhotoIndex();
+      showToast('✓ 相片已儲存');
       renderCards();
     } else {
       const errMsg = data.error?.message || JSON.stringify(data);
